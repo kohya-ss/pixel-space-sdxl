@@ -111,11 +111,20 @@ python -m pixel_sdxl.inference ^
   --height 1024 --width 1024 --num_steps 30 --cfg_scale 7.5
 ```
 
+### 参考：実験的な学習設定
+
+- 蒸留
+  - 学習率 2e-3、バッチサイズ 2、勾配蓄積 4、uniform サンプリング、x0 損失、ステップ数（勾配累積含まず） 2,000 程度
+- Encoder/Decoder 微調整
+  - 学習率 2e-3、バッチサイズ 4 、勾配蓄積 8、x0 損失、uniform サンプリング、ステップ数 10,000
+- 本体学習
+  - 学習率 5e-4、U-Net 本体 5e-5、バッチサイズ 4、勾配蓄積 12、clip_grad_norm 1.0、lpips_lambda 0.05、velocity 損失、logit norm サンプリング、ステップ数 300,000～
+
 ## TIPS
 - 推奨学習順序: Encoder/Decoder 蒸留は任意 → Encoder/Decoder 追加学習 → 本体学習。
 - パッチサイズ: `--base_resolution 64` はパッチ 16、`--base_resolution 32` はパッチ 32 を選びます。学習・推論ともに高さ・幅はパッチサイズの倍数にしてください。
 - 時間ステップ: デフォルトは logit-normal サンプリング（JiTの論文と同じ補正を行います）、`--uniform_sampling` で一様。
-- LPIPS: `--lpips_lambda` を 0.05–0.2 程度で試すと x0 予測の画質が安定しやすいですが、メモリを消費し学習時間もかかります。
+- LPIPS: `--lpips_lambda` を 0.05–0.2 程度で試すと x0 予測の画質が安定するかもしれませんが、メモリを消費し学習時間もかかります。
 - ログとサンプリング: `--sample_every` と `--sample_prompts` で学習中のサンプル画像を定期生成できます。TensorBoard ログは `logs/<timestamp>` に出力されます。
 - チェックポイント運用: `--save_interval` でステップ間保存、復帰時に `--no_restore_optimizer` でオプティマイザを無視可能。
 
