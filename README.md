@@ -91,6 +91,7 @@ python -m pixel_sdxl.train ^
 ### 4. 2 GPU 分業（テキストエンコーダ/UNet 分割）
 `src/pixel_sdxl/train_multi_gpu.py`  
 - テキストエンコーダをセカンダリ GPU、U-Net をメイン GPU に配置するシンプルな 2 GPU 版。テキストエンコーダの微調整は非対応（`lr_text_encoder*` は 0 固定）。
+- **LPIPS 損失を有効にすると LPIPS 損失が NaN になる不具合があります。**
 
 ### 5. DDP 学習
 `src/pixel_sdxl/train_ddp.py`  
