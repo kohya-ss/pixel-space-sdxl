@@ -45,6 +45,8 @@
 - Python 3.10–3.12、PyTorch (CUDA 推奨)、bitsandbytes、transformers、safetensors、Pillow、numpy、tensorboard、tqdm など。  
   LPIPS 損失を使う場合は `lpips` もインストールしてください。
 
+`pip install -e .` として開発モードでインストールできます。
+
 ## 学習スクリプトと例
 共通で `--metadata_files` にメタデータ JSON、`--base_resolution` に 32 または 64（パッチサイズ 16/32 が内部で選択）を渡します。チェックポイントは PyTorch で保存／読み込みしますので、拡張子は `.pt` や `.pth` としてください。
 
