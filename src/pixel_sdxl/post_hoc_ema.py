@@ -2,9 +2,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 
-def post_hoc_ema(ckpt_paths, ema_path):
-    mu = 0.9  # 0.9〜0.99くらいで調整
-
+def post_hoc_ema(ckpt_paths, ema_path, mu=0.9, save_precision="fp32"):
     # 古い順に並んでいる前提で、後ろほど重みが大きいように
     weights = [mu ** (len(ckpt_paths) - 1 - i) for i in range(len(ckpt_paths))]
     wsum = sum(weights)
@@ -27,6 +25,13 @@ def post_hoc_ema(ckpt_paths, ema_path):
             for k in avg_state.keys():
                 avg_state[k] += state[k].float() * w
 
+    if save_precision == "fp16":
+        avg_state = {k: v.half() for k, v in avg_state.items()}
+    elif save_precision == "bf16":
+        avg_state = {k: v.bfloat16() for k, v in avg_state.items()}
+    else:
+        pass  # keep as fp32
+
     print(f"Saving EMA checkpoint to: {ema_path}")
     save_file(avg_state, ema_path)
 
@@ -35,11 +40,24 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Post-hoc EMA for Pixel-SDXL checkpoints")
-    parser.add_argument("--ckpt_paths", nargs="+", required=True, help="List of checkpoint paths to average (oldest to newest).")
+    parser.add_argument(
+        "--ckpt_paths",
+        nargs="+",
+        required=True,
+        help="List of checkpoint paths to average (oldest to newest, no auto sorting).",
+    )
     parser.add_argument("--ema_path", type=str, required=True, help="Output path for the EMA checkpoint.")
+    parser.add_argument("--mu", type=float, default=0.9, help="Decay factor for EMA (default: 0.9).")
+    parser.add_argument(
+        "--save_precision",
+        type=str,
+        choices=["fp16", "bf16", "fp32"],
+        default="fp32",
+        help="Precision for saving the EMA checkpoint (default: fp32).",
+    )
     args = parser.parse_args()
 
     if not args.ema_path.endswith(".safetensors"):
         raise ValueError("The output EMA path must end with .safetensors")
 
-    post_hoc_ema(args.ckpt_paths, args.ema_path)
+    post_hoc_ema(args.ckpt_paths, args.ema_path, args.mu, args.save_precision)
