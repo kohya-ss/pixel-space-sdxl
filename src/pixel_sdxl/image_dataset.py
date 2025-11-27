@@ -13,6 +13,8 @@ import pixel_sdxl.text_encoder_utils as text_encoder_utils
 MAX_PIXELS_PER_IMAGE = 1024 * 1024
 MIN_PIXELS_PER_IMAGE = 768 * 768  # slightly smaller than 1024*1024
 
+CAPTION_DROP_PROBABILITY = 0.1  # probability to drop all captions, for CFG unconditioned training
+TAG_DROP_PROBABILITY = 0.25  # probability to drop each tag
 
 # define class for item
 class ImageItem:
@@ -169,8 +171,9 @@ class ImageDataset(Dataset):
         # drop tags randomly
         dropped_tags = []
         for tag in other_tags:
-            if random.random() < 0.75:  # keep 75% of tags
-                dropped_tags.append(tag)
+            if TAG_DROP_PROBABILITY > 0.0 and random.random() < TAG_DROP_PROBABILITY:
+                continue
+            dropped_tags.append(tag)
         if quality_tag is not None:
             dropped_tags.append(quality_tag)
         if rating_tag is not None:
@@ -261,8 +264,14 @@ class ImageDataset(Dataset):
             img_tensor = torch.from_numpy(img).permute(2, 0, 1).to(dtype=torch.float32) / 127.5 - 1.0  # normalize to [-1, 1], C,H,W
             images.append(img_tensor)
 
-            dropped_tags = self.reorder_and_drop_tags(item.tags)
+            # process tags
+            if CAPTION_DROP_PROBABILITY > 0.0 and random.random() < CAPTION_DROP_PROBABILITY:
+                dropped_tags = []
+            else:
+                dropped_tags = self.reorder_and_drop_tags(item.tags)
+    
             text = ", ".join(dropped_tags) if len(dropped_tags) > 0 else ""
+
             input_ids1, input_ids2 = text_encoder_utils.tokenize(self.tokenizer1, self.tokenizer2, text)
             input_ids1_list.append(input_ids1)
             input_ids2_list.append(input_ids2)
