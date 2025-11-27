@@ -60,6 +60,9 @@ class EncodingImageDataset(ImageDataset):
 
     def __getitem__(self, index):
         images, input_ids1, input_ids2, original_sizes, crop_sizes, target_sizes = super().__getitem__(index)
+        if self.is_skipping is not None and self.is_skipping.value:
+            return images, torch.empty((1, 77, 1)), torch.empty((1, 77, 1)), original_sizes, crop_sizes, target_sizes
+
         with torch.no_grad():
             context, y = prepare_conditioning(
                 input_ids1,
@@ -210,11 +213,14 @@ def main():
     initial_steps = args.initial_steps
     if initial_steps > 0:
         print(f"Skipping to initial step {args.initial_steps}...")
-        while initial_steps > len(data_loader):
-            initial_steps -= len(data_loader)
-            global_step += len(data_loader) // args.grad_accum_steps
+        while initial_steps - step > len(data_loader):
+            step += len(data_loader)
             epoch += 1
-    if initial_steps > 0:
+            pbar.update(len(data_loader))
+
+        global_step += step // args.grad_accum_steps
+        print(f"Continuing skipping for additional {initial_steps - step} steps in the next epoch...")
+    if step < initial_steps:
         is_skipping.value = True
 
     try:
@@ -251,7 +257,7 @@ def main():
                 target_sizes = data[5].squeeze(0)  # B,2
                 assert (
                     original_sizes[0][0].item() > 0 and original_sizes[0][1].item() > 0
-                ), "Illegal original size 0, maybe skipped all data in this epoch."
+                ), "Illegal original size 0, `20` may be too small for pre-fetching issues."
 
                 images = images.to(device=device_main, dtype=unet_dtype)
                 context = context.to(device=device_main, dtype=unet_dtype)
@@ -283,10 +289,6 @@ def main():
                         y=y,
                     )
 
-                    # LPIPS 勾配を後で追加するために勾配を保持
-                    if lpips_model is not None:
-                        x0_pred.retain_grad()
-
                     if args.velocity_loss:
                         # 4-a. v-loss 計算
                         base_loss = velocity_loss_x_pred(x0, x_t, x0_pred, t)
@@ -299,11 +301,15 @@ def main():
                     # モデル出力およびターゲット画像が1024x1024で大きいので、半分にリサイズしてLPIPS計算
                     x0_pred_resized = F.interpolate(x0_pred, scale_factor=0.5, mode="bilinear", align_corners=False)
                     x0_resized = F.interpolate(x0, scale_factor=0.5, mode="bilinear", align_corners=False)
-                    
+
+                    # LPIPS 勾配を後で追加するために勾配を保持
+                    if lpips_model is not None:
+                        x0_pred_resized.retain_grad()
+
                     # [-1,1] で LPIPS を計算（出力をクランプ）
                     lpips_pred = torch.clamp(x0_pred_resized, -1.0, 1.0).float()
                     lpips_target = torch.clamp(x0_resized, -1.0, 1.0).float()
- 
+
                     # device_secondary で勾配計算用のテンソルを作成
                     lpips_pred_secondary = lpips_pred.detach().to(device_secondary).requires_grad_(True)
                     lpips_target_secondary = lpips_target.detach().to(device_secondary)
@@ -329,23 +335,11 @@ def main():
                     loss.backward()
 
                 # LPIPS の勾配を x0_pred.grad に追加
-                if lpips_model is not None and x0_pred.grad is not None:
+                if lpips_model is not None and x0_pred_resized.grad is not None:
                     # クランプの勾配を考慮（-1 < x0_pred < 1 の範囲のみ勾配を流す）
-                    clamp_mask = ((x0_pred.detach() > -1.0) & (x0_pred.detach() < 1.0)).float()
+                    clamp_mask = ((x0_pred_resized.detach() > -1.0) & (x0_pred_resized.detach() < 1.0)).float()
                     scaled_lpips_grad = args.lpips_lambda * lpips_grad * clamp_mask / args.grad_accum_steps
-                    x0_pred.grad.add_(scaled_lpips_grad)
-
-                # # ...existing code...
-                # total_loss = base_loss
-                # if lpips_loss_val is not None:
-                #     total_loss = total_loss + args.lpips_lambda * lpips_loss_val
-
-                # loss = total_loss / args.grad_accum_steps
-
-                # if mixed_precision:
-                #     scaler.scale(loss).backward()
-                # else:
-                #     loss.backward()
+                    x0_pred_resized.grad.add_(scaled_lpips_grad)
 
                 # gradient accumulation中のlossを蓄積
                 accum_loss += loss.item() * args.grad_accum_steps  # 元のlossに戻すために*grad_accum_steps
