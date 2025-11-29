@@ -14,7 +14,8 @@ MAX_PIXELS_PER_IMAGE = 1024 * 1024
 MIN_PIXELS_PER_IMAGE = 768 * 768  # slightly smaller than 1024*1024
 
 CAPTION_DROP_PROBABILITY = 0.1  # probability to drop all captions, for CFG unconditioned training
-TAG_DROP_PROBABILITY = 0.25  # probability to drop each tag
+TAG_DROP_PROBABILITY = 0.5  # maximum probability to drop each tag 
+MIN_TAGS_PER_IMAGE = 15  # minimum number of tags to keep an image
 
 # define class for item
 class ImageItem:
@@ -169,19 +170,28 @@ class ImageDataset(Dataset):
         other_tags = tags[:-2] if len(tags) >= 2 else tags[:-1] if len(tags) >= 1 else tags
 
         # drop tags randomly
+        retained_tags = []
         dropped_tags = []
+        current_tag_drop_probability = random.uniform(0.0, TAG_DROP_PROBABILITY)
         for tag in other_tags:
-            if TAG_DROP_PROBABILITY > 0.0 and random.random() < TAG_DROP_PROBABILITY:
+            if TAG_DROP_PROBABILITY > 0.0 and random.random() < current_tag_drop_probability:
+                dropped_tags.append(tag)
                 continue
-            dropped_tags.append(tag)
+            retained_tags.append(tag)
+        # ensure minimum number of tags
+        if len(retained_tags) < MIN_TAGS_PER_IMAGE and len(dropped_tags) > 0:
+            needed = MIN_TAGS_PER_IMAGE - len(retained_tags)
+            random.shuffle(dropped_tags)
+            retained_tags.extend(dropped_tags[:needed])
+
         if quality_tag is not None:
-            dropped_tags.append(quality_tag)
+            retained_tags.append(quality_tag)
         if rating_tag is not None:
-            dropped_tags.append(rating_tag)
+            retained_tags.append(rating_tag)
 
         # shuffle all tags
-        random.shuffle(dropped_tags)
-        return dropped_tags
+        random.shuffle(retained_tags)
+        return retained_tags
 
     def __len__(self):
         return self.total_batches
