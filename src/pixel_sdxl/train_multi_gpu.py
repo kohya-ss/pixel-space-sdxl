@@ -114,7 +114,9 @@ def main():
     else:
         state_dict = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
 
-    model_state_dict_copy = dict(state_dict["model"])  # make a copy to avoid modifying the original during loading
+    # make a copy to avoid modifying the original during loading
+    model_state_dict_copy = dict(state_dict["model"]) if "model" in state_dict else dict(state_dict)
+
     text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(
         state_dict, base_resolution=args.base_resolution, encoder_decoder_architecture=args.encoder_decoder_architecture
     )
