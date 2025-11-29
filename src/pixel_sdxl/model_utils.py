@@ -184,7 +184,9 @@ def load_models_from_state_dict(
     # U-Net
     print("building U-Net")
     with init_empty_weights():
-        unet = sdxl_pixel_unet.SDXLPixelUNet(base_resolution=base_resolution)
+        unet = sdxl_pixel_unet.SDXLPixelUNet(
+            base_resolution=base_resolution, encoder_decoder_architecture=encoder_decoder_architecture
+        )
 
     print("loading U-Net from checkpoint")
     unet_sd = {}

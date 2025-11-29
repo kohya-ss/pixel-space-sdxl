@@ -84,6 +84,7 @@ def parse_args():
     parser.add_argument(
         "--base_resolution", type=int, choices=[32, 64], default=64, help="Base resolution for Pixel U-Net (32 or 64)."
     )
+    parser.add_argument("--encoder_decoder_architecture", type=str, default="sdxl", help="Encoder/Decoder architecture type.")
     parser.add_argument("--metadata_files", nargs="+", required=True, help="List of metadata JSON files.")
     parser.add_argument("--checkpoint", required=True, help="Path to a safetensors checkpoint to load weights from.")
     parser.add_argument(
@@ -212,7 +213,9 @@ def main():
     else:
         state_dict = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
 
-    text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(state_dict, base_resolution=args.base_resolution)
+    text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(
+        state_dict, base_resolution=args.base_resolution, encoder_decoder_architecture=args.encoder_decoder_architecture
+    )
     text_encoder1.to(device1)
     text_encoder2.to(device1)
 
