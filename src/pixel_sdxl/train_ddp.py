@@ -31,6 +31,7 @@ from pixel_sdxl.train import (
     sample_t,
     sample_t_uniform,
     save_state_to_checkpoint,
+    setup_argparser,
     velocity_loss_x_pred,
 )
 
@@ -48,63 +49,7 @@ def handle_sigint(signum, frame):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Distributed training for pixel-space SDXL with x-pred and velocity loss.")
-    parser.add_argument(
-        "--base_resolution", type=int, choices=[32, 64], default=64, help="Base resolution for Pixel U-Net (32 or 64)."
-    )
-    parser.add_argument(
-        "--encoder_decoder_architecture",
-        type=str,
-        choices=["default", "conv"],
-        default="default",
-        help="Encoder-decoder architecture type.",
-    )
-    parser.add_argument("--metadata_files", nargs="+", required=True, help="List of metadata JSON files.")
-    parser.add_argument("--checkpoint", required=True, help="Path to a safetensors checkpoint to load weights from.")
-    parser.add_argument(
-        "--no_restore_optimizer", action="store_true", help="Do not restore the optimizer state from the checkpoint."
-    )
-    parser.add_argument("--save_path", required=True, help="Path to save the updated checkpoint.")
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=1,
-        help="Per-GPU batch size for ImageDataset (dataset returns a pre-built batch).",
-    )
-    parser.add_argument("--steps", type=int, default=1000, help="Total optimization steps.")
-    parser.add_argument("--initial_steps", type=int, default=0, help="Initial steps already done (skip to this step).")
-    parser.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps.")
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=1e-4,
-        help="Learning rate for Pixel U-Net parts except SDXLUNetBody.",
-    )
-    parser.add_argument(
-        "--lr_sdxl_unet_body",
-        type=float,
-        default=1e-5,
-        help="Learning rate for SDXLUNetBody (0 to freeze).",
-    )
-    parser.add_argument("--lr_text_encoder1", type=float, default=0.0, help="Learning rate for text encoder 1 (0 to freeze).")
-    parser.add_argument("--lr_text_encoder2", type=float, default=0.0, help="Learning rate for text encoder 2 (0 to freeze).")
-    parser.add_argument("--clip_grad_norm", type=float, default=1.0, help="Gradient clipping norm. Set 0 to disable.")
-    parser.add_argument("--velocity_loss", action="store_true", help="Use velocity loss instead of x-pred loss.")
-    parser.add_argument(
-        "--lpips_lambda",
-        type=float,
-        default=0.0,
-        help="Weight for LPIPS perceptual loss; set 0 to disable.",
-    )
-    parser.add_argument("--uniform_sampling", action="store_true", help="Use uniform time sampling instead of logit-normal.")
-    parser.add_argument("--save_interval", type=int, default=0, help="Save every N steps (0 means save only at the end).")
-    parser.add_argument("--no_mixed_precision", action="store_true", help="Disable autocast/GradScaler.")
-    parser.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing on U-Net.")
-    parser.add_argument("--compile_model", action="store_true", help="Compile the U-Net model with torch.compile().")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--sample_every", type=int, default=0, help="Sample and save images every N steps (0 to disable).")
-    parser.add_argument("--sample_prompts", nargs="+", default=[], help="List of prompts to use for sampling during training.")
-    parser.add_argument("--sample_seed", type=int, default=1234, help="Random seed for sampling during training.")
+    parser = setup_argparser()
     parser.add_argument(
         "--backend",
         choices=["nccl", "gloo"],
@@ -150,7 +95,8 @@ def reduce_tensor(tensor: torch.Tensor) -> torch.Tensor:
     if not dist.is_initialized():
         return tensor
     t = tensor.clone()
-    dist.all_reduce(t, op=dist.ReduceOp.AVG)
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    t /= dist.get_world_size()
     return t
 
 
