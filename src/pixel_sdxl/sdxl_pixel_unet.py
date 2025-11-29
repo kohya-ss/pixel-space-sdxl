@@ -445,6 +445,9 @@ class SDXLPixelUNet(nn.Module):
         prediction_type: str = "x",  # "x" or "epsilon" or "v"
     ):
         super().__init__()
+        self.base_resolution = base_resolution
+        self.encoder_decoder_architecture = encoder_decoder_architecture
+        self.prediction_type = prediction_type
 
         in_channels = 3
         if base_resolution == 64:
@@ -597,6 +600,12 @@ class SDXLPixelUNet(nn.Module):
           - "epsilon"/"v"         → その予測（必要なら外で変換）
         """
 
+        # embedding
+        t_emb = sdxl_unet_base.get_timestep_embedding(timesteps, self.model_channels, downscale_freq_shift=0)
+        t_emb = t_emb.to(x_t.dtype)
+        emb = self.time_embed(t_emb)
+        emb = emb + self.label_emb(y)
+
         if self.encoder_decoder_architecture == "default":
             # 1) pixel → patchify
             # x_p: [B, 3*P*P=768, 64, 64]
@@ -604,18 +613,11 @@ class SDXLPixelUNet(nn.Module):
 
             # 2) パッチ encoder → [B, 640, 64, 64]
             h = self.patch_encoder(x_p)
-
-        # 3) SDXL U-Net
-        hs = []
-        t_emb = sdxl_unet_base.get_timestep_embedding(timesteps, self.model_channels, downscale_freq_shift=0)
-        t_emb = t_emb.to(x_t.dtype)
-        emb = self.time_embed(t_emb)
-        emb = emb + self.label_emb(y)
-
-        if self.encoder_decoder_architecture == "conv":
+        elif self.encoder_decoder_architecture == "conv":
             # conv encoder
             h, encoder_skip_connections = self.conv_encoder(x_t, emb)
 
+        # 3) SDXL U-Net
         def call_module(module, h, emb, context):
             x = h
             for layer in module:
@@ -628,6 +630,7 @@ class SDXLPixelUNet(nn.Module):
                     x = layer(x)
             return x
 
+        hs = []
         hs.append(h)  # 最初の入力もスキップ接続用に保存
 
         for module in self.input_blocks:
@@ -640,16 +643,16 @@ class SDXLPixelUNet(nn.Module):
             h = torch.cat([h, hs.pop()], dim=1)
             h = call_module(module, h, emb, context)
 
-        if self.encoder_decoder_architecture == "conv":
-            # conv decoder
-            h = self.conv_decoder(h, emb, encoder_skip_connections)
-            x_hat = h  # [B, 3, 1024, 1024]
-        elif self.encoder_decoder_architecture == "default":
+        if self.encoder_decoder_architecture == "default":
             # 4) パッチ decoder → [B, 768, 64, 64]
             x_p_hat = self.patch_decoder(h)
 
             # 5) unpatchify → [B, 3, 1024, 1024]
             x_hat = self.unpatchify(x_p_hat)
+        elif self.encoder_decoder_architecture == "conv":
+            # conv decoder
+            h = self.conv_decoder(h, emb, encoder_skip_connections)
+            x_hat = h  # [B, 3, 1024, 1024]
 
         # 6) 返す量 (prediction_type) に応じて変換
         if self.prediction_type == "x":
