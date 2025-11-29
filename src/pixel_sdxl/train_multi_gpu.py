@@ -101,7 +101,9 @@ def main():
     else:
         state_dict = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
 
-    text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(state_dict, base_resolution=args.base_resolution)
+    text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(
+        state_dict, base_resolution=args.base_resolution, encoder_decoder_architecture=args.encoder_decoder_architecture
+    )
     text_encoder1.to(device_secondary)
     text_encoder2.to(device_secondary)
 

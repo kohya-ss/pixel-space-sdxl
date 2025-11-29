@@ -105,6 +105,13 @@ def setup_argparser():
     parser.add_argument(
         "--base_resolution", type=int, choices=[32, 64], default=64, help="Base resolution for Pixel U-Net (32 or 64)."
     )
+    parser.add_argument(
+        "--encoder_decoder_architecture",
+        type=str,
+        choices=["default", "conv"],
+        default="default",
+        help="Encoder-decoder architecture type.",
+    )
     parser.add_argument("--metadata_files", nargs="+", required=True, help="List of metadata JSON files.")
     parser.add_argument("--checkpoint", required=True, help="Path to a safetensors checkpoint to load weights from.")
     parser.add_argument(
@@ -268,7 +275,9 @@ def main():
     else:
         state_dict = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
 
-    text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(state_dict, base_resolution=args.base_resolution)
+    text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(
+        state_dict, base_resolution=args.base_resolution, encoder_decoder_architecture=args.encoder_decoder_architecture
+    )
     text_encoder1.to(device)
     text_encoder2.to(device)
 
@@ -455,7 +464,7 @@ def main():
                     # モデル出力およびターゲット画像が1024x1024で大きいので、半分にリサイズしてLPIPS計算
                     x0_pred_resized = F.interpolate(x0_pred, scale_factor=0.5, mode="bilinear", align_corners=False)
                     x0_resized = F.interpolate(x0, scale_factor=0.5, mode="bilinear", align_corners=False)
-                    
+
                     # [-1,1] で LPIPS を計算（出力をクランプ）
                     lpips_pred = torch.clamp(x0_pred_resized, -1.0, 1.0).float()
                     lpips_target = torch.clamp(x0_resized, -1.0, 1.0).float()

@@ -180,6 +180,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Pixel-space SDXL inference.")
     parser.add_argument("--checkpoint", required=True, help="Path to a safetensors checkpoint.")
     parser.add_argument("--base_resolution", type=int, default=64, help="Base resolution for U-Net.")
+    parser.add_argument(
+        "--encoder_decoder_architecture",
+        type=str,
+        choices=["default", "conv"],
+        default="default",
+        help="Encoder-decoder architecture type.",
+    )
     parser.add_argument("--prompt", required=True, help="Prompt text.")
     parser.add_argument("--negative_prompt", default="", help="Negative prompt text.")
     parser.add_argument("--output_dir", required=True, help="Directory to save generated images.")
@@ -215,7 +222,9 @@ def main():
         state_dict = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     else:
         state_dict = safetensors.torch.load(open(args.checkpoint, "rb").read())
-    text_encoder1, text_encoder2, unet, _ = load_models_from_state_dict(state_dict, base_resolution=args.base_resolution)
+    text_encoder1, text_encoder2, unet, _ = load_models_from_state_dict(
+        state_dict, base_resolution=args.base_resolution, encoder_decoder_architecture=args.encoder_decoder_architecture
+    )
 
     config = InferenceConfig(
         prompt=args.prompt,

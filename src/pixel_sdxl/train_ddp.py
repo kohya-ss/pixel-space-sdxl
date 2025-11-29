@@ -1,4 +1,5 @@
 import argparse
+import copy
 from datetime import datetime
 from multiprocessing import Value
 import os
@@ -50,6 +51,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Distributed training for pixel-space SDXL with x-pred and velocity loss.")
     parser.add_argument(
         "--base_resolution", type=int, choices=[32, 64], default=64, help="Base resolution for Pixel U-Net (32 or 64)."
+    )
+    parser.add_argument(
+        "--encoder_decoder_architecture",
+        type=str,
+        choices=["default", "conv"],
+        default="default",
+        help="Encoder-decoder architecture type.",
     )
     parser.add_argument("--metadata_files", nargs="+", required=True, help="List of metadata JSON files.")
     parser.add_argument("--checkpoint", required=True, help="Path to a safetensors checkpoint to load weights from.")
@@ -125,7 +133,7 @@ def setup_distributed(backend: str):
         os.environ.setdefault("LOCAL_RANK", "0")
         print("Warning: RANK not set. Running in single-GPU mode with RANK=0, WORLD_SIZE=1")
 
-    dist.init_process_group(backend=backend)  # , init_method="env://?use_libuv=False")
+    dist.init_process_group(backend=backend, init_method="env://?use_libuv=False" if os.name == "nt" else None)
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -186,7 +194,9 @@ def main():
     else:
         state_dict = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
 
-    text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(state_dict, base_resolution=args.base_resolution)
+    text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(
+        state_dict, base_resolution=args.base_resolution, encoder_decoder_architecture=args.encoder_decoder_architecture
+    )
     text_encoder1.to(device)
     text_encoder2.to(device)
     unet.to(device)

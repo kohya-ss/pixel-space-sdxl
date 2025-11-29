@@ -145,7 +145,7 @@ def convert_text_encoder_2_state_dict_to_sdxl(checkpoint, logit_scale):
 
 
 def load_models_from_state_dict(
-    state_dict: dict[str, torch.Tensor], base_resolution: int = 64
+    state_dict: dict[str, torch.Tensor], base_resolution: int = 64, encoder_decoder_architecture: str = "default"
 ) -> tuple[CLIPTextModel, CLIPTextModelWithProjection, sdxl_pixel_unet.SDXLPixelUNet, torch.Tensor | None]:
     if "model" in state_dict:
         state_dict = state_dict["model"]
@@ -154,7 +154,9 @@ def load_models_from_state_dict(
     if "model.diffusion_model.input_blocks.0.0.weight" in state_dict:
         # original SDXL checkpoint
         print("Prepare new U-Net state dict...")
-        unet = sdxl_pixel_unet.SDXLPixelUNet(base_resolution=base_resolution)
+        unet = sdxl_pixel_unet.SDXLPixelUNet(
+            base_resolution=base_resolution, encoder_decoder_architecture=encoder_decoder_architecture
+        )
         pixel_unet_sd = unet.state_dict()
 
         print("Loading original SDXL checkpoint...")
