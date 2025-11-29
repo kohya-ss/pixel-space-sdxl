@@ -183,8 +183,9 @@ class ResidualConvBlock(nn.Module):
         self.conv2 = nn.Conv2d(hidden_channels, channels, kernel_size=3, padding=1)
         self.norm2 = nn.GroupNorm(32, channels)
         self.act = nn.SiLU()
+        self.gradient_checkpointing = False
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
         h = self.conv1(x)
         h = self.norm1(h)
@@ -193,6 +194,19 @@ class ResidualConvBlock(nn.Module):
         h = self.norm2(h)
         h = self.act(h + residual)
         return h
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            # print("ResidualConvBlock: gradient_checkpointing")
+            def create_custom_forward(func):
+                def custom_forward(*inputs):
+                    return func(*inputs)
+
+                return custom_forward
+
+            return torch.utils.checkpoint.checkpoint(create_custom_forward(self._forward), x)
+        else:
+            return self._forward(x)
 
 
 class ConvEncoder32(nn.Module):
@@ -248,6 +262,9 @@ class ConvEncoder32(nn.Module):
 
     def set_gradient_checkpointing(self, value=False):
         self.gradient_checkpointing = value
+        self.resblock_1.gradient_checkpointing = value
+        self.resblock_2.gradient_checkpointing = value
+        self.resblock_3.gradient_checkpointing = value
         self.resblock_4_1.gradient_checkpointing = value
         self.resblock_4_2.gradient_checkpointing = value
         self.resblock_5_1.gradient_checkpointing = value
@@ -377,6 +394,9 @@ class ConvDecoder32(nn.Module):
         self.resblock_1_1.gradient_checkpointing = value
         self.resblock_1_2.gradient_checkpointing = value
         self.resblock_2.gradient_checkpointing = value
+        self.resblock_3.gradient_checkpointing = value
+        self.resblock_4.gradient_checkpointing = value
+        self.resblock_5.gradient_checkpointing = value
 
     def forward(self, x: torch.Tensor, emb: torch.Tensor, hs: list[torch.Tensor]) -> torch.Tensor:
         s = hs.pop()  # 32, 640 ch
