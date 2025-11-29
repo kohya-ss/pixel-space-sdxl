@@ -1,24 +1,17 @@
-import argparse
 from datetime import datetime
 from multiprocessing import Value
 import os
 from typing import Any, Optional
-from pixel_sdxl import sdxl_pixel_unet
 import torch
-from torch import nn
 from torch.nn import functional as F
 from torch.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
-import bitsandbytes as bnb
 from tqdm import tqdm
 import safetensors.torch
 
 from pixel_sdxl.image_dataset import ImageDataset
-from pixel_sdxl.model_utils import load_models_from_state_dict, serialize_models_to_state_dict
-from pixel_sdxl import train_utils
-from pixel_sdxl.text_encoder_utils import encode_tokens, get_sdxl_tokenizers
-from pixel_sdxl.sdxl_pixel_unet import SDXLPixelUNet
-from pixel_sdxl.inference import generate_image, InferenceConfig, tensor_to_pil_image
+from pixel_sdxl.model_utils import load_models_from_state_dict
+from pixel_sdxl.text_encoder_utils import get_sdxl_tokenizers
 from pixel_sdxl.train import (
     NUM_TRAIN_TIMESTEPS,
     add_noise_x0,
@@ -44,8 +37,10 @@ def parse_args():
 class EncodingImageDataset(ImageDataset):
     def __init__(
         self,
-        text_encoder1: nn.Module,
-        text_encoder2: nn.Module,
+        state_dict: dict[str, Any],
+        base_resolution: int,
+        encoder_decoder_architecture: str,
+        device: torch.device,
         current_epoch: Any,
         metadata_files: str,
         batch_size: int,
@@ -55,13 +50,31 @@ class EncodingImageDataset(ImageDataset):
         is_skipping: Optional[Any] = None,
     ):
         super().__init__(current_epoch, metadata_files, batch_size, tokenizer1, tokenizer2, seed, is_skipping)
-        self.text_encoder1 = text_encoder1
-        self.text_encoder2 = text_encoder2
+        self.state_dict = state_dict
+        self.base_resolution = base_resolution
+        self.encoder_decoder_architecture = encoder_decoder_architecture
+        self.text_encoder1 = None
+        self.text_encoder2 = None
+        self.device = device
 
     def __getitem__(self, index):
         images, input_ids1, input_ids2, original_sizes, crop_sizes, target_sizes = super().__getitem__(index)
         if self.is_skipping is not None and self.is_skipping.value:
             return images, torch.empty((1, 77, 1)), torch.empty((1, 77, 1)), original_sizes, crop_sizes, target_sizes
+
+        if self.text_encoder1 is None or self.text_encoder2 is None:
+            # lazy load text encoders to avoid unnecessary GPU memory usage
+            print("Loading text encoders into dataset...")
+            self.text_encoder1, self.text_encoder2, _, _ = load_models_from_state_dict(
+                self.state_dict,
+                base_resolution=self.base_resolution,
+                encoder_decoder_architecture=self.encoder_decoder_architecture,
+            )
+            self.text_encoder1.to(device=self.device)
+            self.text_encoder2.to(device=self.device)
+            self.text_encoder1.eval()
+            self.text_encoder2.eval()
+            self.state_dict = None  # free memory
 
         with torch.no_grad():
             context, y = prepare_conditioning(
@@ -101,18 +114,17 @@ def main():
     else:
         state_dict = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
 
+    model_state_dict_copy = dict(state_dict["model"])  # make a copy to avoid modifying the original during loading
     text_encoder1, text_encoder2, unet, logit_scale = load_models_from_state_dict(
         state_dict, base_resolution=args.base_resolution, encoder_decoder_architecture=args.encoder_decoder_architecture
     )
-    text_encoder1.to(device_secondary)
-    text_encoder2.to(device_secondary)
 
     unet.to(device_main)
     print("Models loaded. Casting U-Net to float32 for stable training...")
     unet.to(torch.float32)  # ensure float32 for stable training even with mixed precision
 
-    text_encoder1.eval()
-    text_encoder2.eval()
+    text_encoder1.eval()  # run on CPU
+    text_encoder2.eval()  # run on CPU
     unet.train()
 
     if args.gradient_checkpointing:
@@ -152,9 +164,13 @@ def main():
 
     current_epoch = Value("i", 0)  # shared value for epoch count across workers
     is_skipping = Value("b", False)  # shared value to indicate skipping state
+
+    # DataSet側、つまりDataLoaderのworkerプロセスでテキストエンコーダをロードするためにstate_dictを渡す（無理やりすぎる～(;^ω^)
     dataset = EncodingImageDataset(
-        text_encoder1,
-        text_encoder2,
+        model_state_dict_copy,
+        args.base_resolution,
+        args.encoder_decoder_architecture,
+        device_secondary,
         current_epoch,
         args.metadata_files,
         args.batch_size,
@@ -163,6 +179,7 @@ def main():
         seed=args.seed,
         is_skipping=is_skipping,
     )
+    del model_state_dict_copy, state_dict  # free memory
 
     # dataloader with batch_size=1 since ImageDataset already returns a batch
     print("Preparing data loader... Note: num_workers is set to 1 because text encoders are used in dataset.")
@@ -173,7 +190,7 @@ def main():
     # t_eps = 5e-2
 
     scaler = GradScaler(enabled=mixed_precision)
-    unet_dtype = next(unet.parameters()).dtype
+    unet_dtype = next(unet.parameters()).dtype  # これいつもfloat32のはず
     clip_params = [p for p in unet.parameters() if p.requires_grad]
     if args.lr_text_encoder1 > 0:
         clip_params += [p for p in text_encoder1.parameters() if p.requires_grad]
@@ -193,8 +210,8 @@ def main():
     epoch = 0
     optimizer.zero_grad(set_to_none=True)
     pbar = tqdm(range(args.steps))
-    accum_loss = 0.0  # gradient accumulation中のloss合計
-    accum_lpips_loss = 0.0  # gradient accumulation中のLPIPS loss合計
+    accum_loss = torch.tensor(0.0, device=device_main)  # gradient accumulation中のloss合計
+    accum_lpips_loss = torch.tensor(0.0, device=device_main)  # gradient accumulation中のLPIPS loss合計
 
     # generate initial samples before training
     if args.sample_every > 0 and args.sample_prompts:
@@ -257,6 +274,8 @@ def main():
                 original_sizes = data[3].squeeze(0)  # B,2
                 crop_sizes = data[4].squeeze(0)  # B,2
                 target_sizes = data[5].squeeze(0)  # B,2
+
+                # このassertionは、original_sizesがCPU上にあるのでCUDAと同期しない
                 assert (
                     original_sizes[0][0].item() > 0 and original_sizes[0][1].item() > 0
                 ), "Illegal original size 0, `20` may be too small for pre-fetching issues."
@@ -291,6 +310,10 @@ def main():
                         y=y,
                     )
 
+                    # デバッグ用: 勾配追跡を確認
+                    # if lpips_model is not None:
+                    #     x0_pred.retain_grad()
+
                     if args.velocity_loss:
                         # 4-a. v-loss 計算
                         base_loss = velocity_loss_x_pred(x0, x_t, x0_pred, t)
@@ -298,58 +321,67 @@ def main():
                         # 4-b. x-pred loss 計算
                         base_loss = F.mse_loss(x0_pred, x0)
 
+                # LPIPS計算 (PyTorchのAutogradに任せる修正版)
                 lpips_loss_val = None
+                lpips_loss_tensor = None
+
                 if lpips_model is not None:
-                    # モデル出力およびターゲット画像が1024x1024で大きいので、半分にリサイズしてLPIPS計算
-                    x0_pred_resized = F.interpolate(x0_pred, scale_factor=0.5, mode="bilinear", align_corners=False)
-                    x0_resized = F.interpolate(x0, scale_factor=0.5, mode="bilinear", align_corners=False)
+                    # assert x0_pred.requires_grad, "x0_pred must require grad for LPIPS loss computation."
 
-                    # LPIPS 勾配を後で追加するために勾配を保持
-                    if lpips_model is not None:
-                        x0_pred_resized.retain_grad()
+                    # 計算グラフを切らずに、テンソルをsecondaryデバイスへ移動
+                    # float32へキャストしてから移動（LPIPSの安定性のため）
+                    x0_secondary = x0.detach().to(device_secondary, dtype=torch.float32)  # 勾配不要
+                    x0_pred_secondary = x0_pred.to(device_secondary, dtype=torch.float32)
+                    t_secondary = t.detach().to(device_secondary)  # 勾配不要
 
-                    # [-1,1] で LPIPS を計算（出力をクランプ）
-                    lpips_pred = torch.clamp(x0_pred_resized, -1.0, 1.0).float()
-                    lpips_target = torch.clamp(x0_resized, -1.0, 1.0).float()
+                    # secondaryデバイス上でリサイズとクランプ
+                    # interpolateもautogradの対象になります
+                    x0_pred_resized = F.interpolate(x0_pred_secondary, scale_factor=0.5, mode="bilinear", align_corners=False)
+                    x0_resized = F.interpolate(x0_secondary, scale_factor=0.5, mode="bilinear", align_corners=False)
 
-                    # device_secondary で勾配計算用のテンソルを作成
-                    lpips_pred_secondary = lpips_pred.detach().to(device_secondary).requires_grad_(True)
-                    lpips_target_secondary = lpips_target.detach().to(device_secondary)
+                    lpips_pred_clamped = torch.clamp(x0_pred_resized, -1.0, 1.0)
+                    lpips_target_clamped = torch.clamp(x0_resized, -1.0, 1.0)
 
-                    # LPIPS loss を計算
-                    lpips_out = lpips_model(lpips_pred_secondary, lpips_target_secondary)
-                    lpips_out = lpips_out * (1 - t.to(device_secondary)).view(B, 1, 1, 1)
-                    lpips_loss_val = lpips_out.mean()
+                    # LPIPS forward
+                    lpips_out = lpips_model(lpips_pred_clamped, lpips_target_clamped)
 
-                    # device_secondary で勾配を計算
-                    lpips_loss_val.backward()
-                    lpips_grad = lpips_pred_secondary.grad.to(device_main)
+                    # 重み付け
+                    lpips_out = lpips_out * (1 - t_secondary).view(B, 1, 1, 1)
+                    lpips_loss_tensor = lpips_out.mean()
 
-                    # ログ用に値を保持（勾配グラフから切り離す）
-                    lpips_loss_val = lpips_loss_val.detach().to(device_main)
+                    # # デバッグ用: 勾配が流れているか確認
+                    # lpips_loss_tensor.backward(retain_graph=True)  # テスト時のみ有効化
+                    # assert x0_pred.grad is not None, "Gradient did not flow back to x0_pred"
+
+                # Lossの合算とBackward
+                # base_lossはmainデバイス、lpips_loss_tensorはsecondaryデバイスにありますが、
+                # 加算時にPyTorchが自動的に処理、あるいは明示的に戻して加算します。
 
                 total_loss = base_loss
-                loss = total_loss / args.grad_accum_steps
+                if lpips_loss_tensor is not None:
+                    lpips_loss_tensor = lpips_loss_tensor.to(device_main)
+                    lpips_loss_val = lpips_loss_tensor.detach()
+                    total_loss = total_loss + args.lpips_lambda * lpips_loss_tensor
 
+                total_loss = total_loss / args.grad_accum_steps
                 if mixed_precision:
-                    scaler.scale(loss).backward()
+                    scaler.scale(total_loss).backward()  # 単にscaleするだけなのでLPIPS lossも含んでも良い
                 else:
-                    loss.backward()
+                    total_loss.backward()
 
-                # LPIPS の勾配を x0_pred.grad に追加
-                if lpips_model is not None and x0_pred_resized.grad is not None:
-                    # クランプの勾配を考慮（-1 < x0_pred < 1 の範囲のみ勾配を流す）
-                    clamp_mask = ((x0_pred_resized.detach() > -1.0) & (x0_pred_resized.detach() < 1.0)).float()
-                    scaled_lpips_grad = args.lpips_lambda * lpips_grad * clamp_mask / args.grad_accum_steps
-                    x0_pred_resized.grad.add_(scaled_lpips_grad)
+                # ログ集計用の値計算
+                base_loss_val = base_loss.detach()
+                total_loss_val = base_loss_val
+                if lpips_loss_val is not None:
+                    total_loss_val = total_loss_val + lpips_loss_val * args.lpips_lambda
 
                 # gradient accumulation中のlossを蓄積
-                accum_loss += loss.item() * args.grad_accum_steps  # 元のlossに戻すために*grad_accum_steps
+                accum_loss += total_loss_val
                 if lpips_loss_val is not None:
-                    accum_lpips_loss += lpips_loss_val.item()  # ここはそのまま足す
+                    accum_lpips_loss += lpips_loss_val
 
                 # epoch平均loss計算用に保存
-                epoch_losses.append(loss.item() * args.grad_accum_steps)
+                epoch_losses.append(total_loss_val * args.grad_accum_steps)  # tensor
 
                 if (step + 1) % args.grad_accum_steps == 0:
                     if mixed_precision:
@@ -365,6 +397,8 @@ def main():
                     global_step += 1
 
                     # gradient accumulation全体の平均lossを計算
+                    accum_loss = accum_loss.item()
+                    accum_lpips_loss = accum_lpips_loss.item()
                     avg_accum_loss = accum_loss / args.grad_accum_steps
                     pbar.set_description(f"loss={avg_accum_loss:.4f}")
 
@@ -408,6 +442,7 @@ def main():
 
             # epochごとの平均lossを計算してTensorBoardに記録
             if epoch_losses:
+                epoch_losses = [loss.item() if isinstance(loss, torch.Tensor) else loss for loss in epoch_losses]
                 avg_epoch_loss = sum(epoch_losses) / len(epoch_losses)
                 writer.add_scalar("train/loss_epoch", avg_epoch_loss, epoch)
                 print(f"Epoch {epoch} average loss: {avg_epoch_loss:.4f}")
