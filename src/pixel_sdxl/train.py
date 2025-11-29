@@ -25,7 +25,7 @@ NUM_TRAIN_TIMESTEPS = 1000
 COMPILE_MODEL = True
 
 
-def prepare_optimizer(
+def prepare_param_groups(
     unet: SDXLPixelUNet,
     text_encoder1: nn.Module,
     text_encoder2: nn.Module,
@@ -33,7 +33,7 @@ def prepare_optimizer(
     lr_unet_body: float,
     lr_text_encoder1: float,
     lr_text_encoder2: float,
-    weight_decay: float = 0.01,
+    # weight_decay: float = 0.01,
 ) -> torch.optim.Optimizer:
     param_groups: list[dict] = []
 
@@ -61,9 +61,11 @@ def prepare_optimizer(
     if not param_groups:
         raise ValueError("No trainable parameters. Please set at least one learning rate > 0.")
 
+    return param_groups
     # optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.999), weight_decay=weight_decay)
-    optimizer = bnb.optim.AdamW8bit(param_groups, betas=(0.9, 0.999), weight_decay=weight_decay)
-    return optimizer
+    # optimizer = bnb.optim.AdamW8bit(param_groups, betas=(0.9, 0.999), weight_decay=weight_decay)
+    # optimizer = schedulefree.RAdamScheduleFree(param_groups, betas=(0.9, 0.999), weight_decay=weight_decay)
+    # return optimizer
 
 
 def prepare_conditioning(
@@ -304,7 +306,7 @@ def main():
 
     lpips_model = maybe_build_lpips(args.lpips_lambda, torch.float32, device)
 
-    optimizer = prepare_optimizer(
+    param_groups = prepare_param_groups(
         unet,
         text_encoder1,
         text_encoder2,
@@ -313,6 +315,8 @@ def main():
         lr_text_encoder1=args.lr_text_encoder1,
         lr_text_encoder2=args.lr_text_encoder2,
     )
+    weight_decay = 0.01
+    optimizer = bnb.optim.AdamW8bit(param_groups, betas=(0.9, 0.999), weight_decay=weight_decay)
 
     if "optimizer_state" in state_dict:
         if args.no_restore_optimizer:

@@ -17,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import safetensors.torch
 from tqdm import tqdm
+import bitsandbytes as bnb
 
 from pixel_sdxl.image_dataset import ImageDataset
 from pixel_sdxl.model_utils import load_models_from_state_dict
@@ -26,7 +27,7 @@ from pixel_sdxl.train import (
     add_noise_x0,
     maybe_build_lpips,
     prepare_conditioning,
-    prepare_optimizer,
+    prepare_param_groups,
     sample_and_save_images,
     sample_t,
     sample_t_uniform,
@@ -180,7 +181,7 @@ def main():
 
     lpips_model = maybe_build_lpips(args.lpips_lambda, torch.float32, device)
 
-    optimizer = prepare_optimizer(
+    param_groups = prepare_param_groups(
         unet,
         text_encoder1,
         text_encoder2,
@@ -189,6 +190,8 @@ def main():
         lr_text_encoder1=args.lr_text_encoder1,
         lr_text_encoder2=args.lr_text_encoder2,
     )
+    weight_decay = 0.01
+    optimizer = bnb.optim.AdamW8bit(param_groups, betas=(0.9, 0.999), weight_decay=weight_decay)
 
     lr_for_groups = [group["lr"] for group in optimizer.param_groups]
 

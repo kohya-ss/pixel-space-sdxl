@@ -7,6 +7,7 @@ from torch.nn import functional as F
 from torch.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import bitsandbytes as bnb
 import safetensors.torch
 
 from pixel_sdxl.image_dataset import ImageDataset
@@ -17,7 +18,7 @@ from pixel_sdxl.train import (
     add_noise_x0,
     maybe_build_lpips,
     prepare_conditioning,
-    prepare_optimizer,
+    prepare_param_groups,
     sample_and_save_images,
     sample_t,
     sample_t_uniform,
@@ -140,7 +141,7 @@ def main():
 
     lpips_model = maybe_build_lpips(args.lpips_lambda, torch.float32, device_secondary)
 
-    optimizer = prepare_optimizer(
+    param_groups = prepare_param_groups(
         unet,
         text_encoder1,
         text_encoder2,
@@ -149,6 +150,7 @@ def main():
         lr_text_encoder1=args.lr_text_encoder1,
         lr_text_encoder2=args.lr_text_encoder2,
     )
+    optimizer = bnb.optim.AdamW8bit(param_groups, betas=(0.9, 0.999), weight_decay=0.01)
 
     if "optimizer_state" in state_dict:
         if args.no_restore_optimizer:
