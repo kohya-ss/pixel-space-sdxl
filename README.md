@@ -14,6 +14,7 @@
   - 1024x1024 入力をパッチ化（16x16 または 32x32）→ パッチエンコーダで 64x64x640 もしくは 32x32x1280 表現へ圧縮。  
   - `sdxl_unet_base.py` に基づく U-Net 本体（ResNet + クロスアテンション Transformer）で条件付きノイズ推定を実施。  
   - パッチデコーダで 3ch 画像に復元し、アンパッチ化して元解像度を再構成。
+  - Convolution層によるエンコーダ／デコーダも用意してあり、`encoder_decoder_architecture` 引数で選択可能。
 - 条件情報  
   - テキスト: SDXL 互換の 2 系統の CLIP トークナイザ／テキストエンコーダ出力を結合。  
   - サイズ: 元解像度・クロップ位置・ターゲット解像度を埋め込み、テキスト条件と結合した ADM 条件 `y` として利用。
@@ -92,6 +93,7 @@ python -m pixel_sdxl.train ^
 `src/pixel_sdxl/train_multi_gpu.py`  
 - テキストエンコーダをセカンダリ GPU、U-Net をメイン GPU に配置するシンプルな 2 GPU 版。テキストエンコーダの微調整は非対応（`lr_text_encoder*` は 0 固定）。
 - LPIPS 損失が NaN になる不具合は修正済みです。
+- オプティマイザを RAdamScheduleFree にしてあるので適宜書き換えてください。
 
 ### 5. DDP 学習
 `src/pixel_sdxl/train_ddp.py`  

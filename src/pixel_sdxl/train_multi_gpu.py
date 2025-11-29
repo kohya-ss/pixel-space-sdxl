@@ -2,6 +2,7 @@ from datetime import datetime
 from multiprocessing import Value
 import os
 from typing import Any, Optional
+import schedulefree
 import torch
 from torch.nn import functional as F
 from torch.amp import GradScaler, autocast
@@ -150,7 +151,9 @@ def main():
         lr_text_encoder1=args.lr_text_encoder1,
         lr_text_encoder2=args.lr_text_encoder2,
     )
-    optimizer = bnb.optim.AdamW8bit(param_groups, betas=(0.9, 0.999), weight_decay=0.01)
+    # weight_decay = 0.01
+    # optimizer = bnb.optim.AdamW8bit(param_groups, betas=(0.9, 0.999), weight_decay=weight_decay)
+    optimizer = schedulefree.RAdamScheduleFree(param_groups, betas=(0.9, 0.999))
 
     if "optimizer_state" in state_dict:
         if args.no_restore_optimizer:
@@ -220,6 +223,7 @@ def main():
     # generate initial samples before training
     if args.sample_every > 0 and args.sample_prompts:
         print("Generating initial sample images before training...")
+        optimizer.eval()
         sample_and_save_images(
             0,
             unet,
@@ -232,6 +236,7 @@ def main():
             tokenizer2,
             autocast_dtype,
         )
+        optimizer.train()
 
     initial_steps = args.initial_steps
     if initial_steps > 0:
@@ -402,7 +407,8 @@ def main():
 
                     # gradient accumulation全体の平均lossを計算
                     accum_loss = accum_loss.item()
-                    accum_lpips_loss = accum_lpips_loss.item()
+                    if lpips_loss_val is not None:
+                        accum_lpips_loss = accum_lpips_loss.item()
                     avg_accum_loss = accum_loss / args.grad_accum_steps
                     pbar.set_description(f"loss={avg_accum_loss:.4f}")
 
@@ -414,17 +420,20 @@ def main():
                         writer.add_scalar("train/base_loss_step", avg_base_loss, global_step)
                         writer.add_scalar("train/lpips_step", avg_accum_loss_lpips, global_step)
 
-                    accum_loss = 0.0  # リセット
-                    accum_lpips_loss = 0.0  # リセット
+                    accum_loss = torch.tensor(0.0, device=device_main)  # リセット
+                    accum_lpips_loss = torch.tensor(0.0, device=device_main)  # リセット
 
                 if args.save_interval > 0 and (step + 1) % args.save_interval == 0:
+                    optimizer.eval()
                     save_path_body, split_ext = os.path.splitext(args.save_path)
                     save_path = f"{save_path_body}_step{step + 1}{split_ext}"
                     save_state_to_checkpoint(save_path, unet, text_encoder1, text_encoder2, optimizer, logit_scale)
                     print(f"Checkpoint saved at step {step + 1}: {save_path}")
+                    optimizer.train()
 
                 if args.sample_every > 0 and (step + 1) % args.sample_every == 0 and args.sample_prompts:
                     print(f"Generating sample images at step {step + 1}...")
+                    optimizer.eval()
                     sample_and_save_images(
                         step + 1,
                         unet,
@@ -437,6 +446,7 @@ def main():
                         tokenizer2,
                         autocast_dtype,
                     )
+                    optimizer.train()
 
                 step += 1
                 pbar.update(1)
@@ -453,6 +463,7 @@ def main():
 
     except KeyboardInterrupt:
         print("Training interrupted. Saving current checkpoint...")
+        optimizer.eval()
         save_path_body, split_ext = os.path.splitext(args.save_path)
         interrupted_save_path = f"{save_path_body}_interrupted_step{step}{split_ext}"
         save_state_to_checkpoint(interrupted_save_path, unet, text_encoder1, text_encoder2, optimizer, logit_scale)
@@ -463,6 +474,7 @@ def main():
         return
 
     print("Saving final checkpoint...")
+    optimizer.eval()
     save_state_to_checkpoint(args.save_path, unet, text_encoder1, text_encoder2, optimizer, logit_scale)
     print(f"Training finished. Saved to {args.save_path}")
 
